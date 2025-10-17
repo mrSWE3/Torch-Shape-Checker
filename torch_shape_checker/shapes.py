@@ -1,11 +1,23 @@
 
-from typing import Callable, Dict
+from typing import Callable, Dict, Any
 import torch
 
 shape_type = torch.Size
 shape_transform_type = Callable[[list[shape_type]], shape_type]
 
 ATEN_SHAPE_FUNCS: Dict[str, shape_transform_type] = {}
+
+def eval_aten(aten_name:str, typ: str, *args: Any) -> Any:
+    aten_op = getattr(torch.ops.aten, aten_name)
+    try:
+        aten_op = getattr(aten_op, typ)
+        kwargs = {a.name:v for a,v in zip(aten_op._schema.arguments, args)}
+        return aten_op(**kwargs)
+    except:
+        return aten_op(*args)
+    
+
+
 
 def register_aten(*op_names: str) -> Callable[[shape_transform_type], shape_transform_type]:
     def decorator(fn: shape_transform_type) -> shape_transform_type:
@@ -29,37 +41,33 @@ def broadcast_shape(a: shape_type, b: shape_type) -> shape_type:
     return torch.Size(result_shape)
 
 
-@register_aten("aten::add", "aten::mul", "aten::sub", "aten::div", "aten::pow")
+#@register_aten("add", "mul", "sub", "div", "pow")
 def shape_elementwise(shapes: list[shape_type]) -> shape_type:
     assert len(shapes) == 2
     return broadcast_shape(shapes[0], shapes[1])
 
 
-# Register aten::tensor
-@register_aten("aten::tensor")
+# Register tensor
+#@register_aten("tensor")
 def shape_tensor(shapes: list[shape_type]) -> shape_type:
-    # For aten::tensor, the output shape is usually a scalar (empty shape),
+    # For tensor, the output shape is usually a scalar (empty shape),
     # but if the input is a list of values, the shape is (N,) where N is the length of the list.
     # Here, we assume the input shape is provided as a single shape argument.
     assert len(shapes) == 1
     return shapes[0]
 
-# Register aten::linear
-@register_aten("aten::linear")
+#@register_aten("linear")
 def shape_linear(shapes: list[shape_type]) -> shape_type:
-    # aten::linear(%input, %weight, %bias)
-    # input: (N, in_features)
+    # linear(%input, %weight, %bias)
+    # input: (..., in_features)
     # weight: (out_features, in_features)
     # bias: (out_features) or None
-    # Output: (N, out_features)
+    # Output: (..., out_features)
     assert len(shapes) == 3
     input_shape, weight_shape, bias_shape = shapes
-    assert len(input_shape) >= 2, f"input must have at least 2 dims, got {input_shape}"
     assert len(weight_shape) == 2, f"weight must have 2 dims, got {weight_shape}"
-    in_features = input_shape[1]
+    in_features = input_shape[-1]
     weight_out, weight_in = weight_shape
     assert in_features == weight_in, f"input's in_features ({in_features}) must match weight's in_features ({weight_in})"
-    N = input_shape[0]
-    out_features = weight_out
-    # Output shape: (N, out_features) + input_shape[2:]
-    return torch.Size((N, out_features) + tuple(input_shape[2:]))
+    # Output shape: input_shape[:-1] + (out_features,)
+    return torch.Size(tuple(input_shape[:-1]) + (weight_out,))
